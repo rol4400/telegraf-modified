@@ -134,6 +134,35 @@ export type ExtraVenue = MakeExtra<
   'latitude' | 'longitude' | 'title' | 'address'
 >
 export type ExtraVideo = MakeExtra<'sendVideo', 'video'> & {
+  /**
+   * Progress callback for file uploads.
+   * 
+   * **Important:** Progress tracking works differently depending on the input type:
+   * - **File paths (string):** Progress is automatically tracked
+   * - **Buffers:** Progress is automatically tracked  
+   * - **Streams:** You must specify the total size in the InputFile for progress to work
+   * 
+   * @example
+   * // For file paths (automatic progress):
+   * await ctx.sendVideo('/path/to/video.mp4', {
+   *   onProgress: (progress) => console.log(`${progress.percentage}% uploaded`)
+   * })
+   *   * // For streams (manual size required):
+   * await ctx.sendVideo({ 
+   *   source: stream, 
+   *   filename: 'video.mp4',
+   *   knownSize: 1024000 // Required for progress tracking
+   * }, {
+   *   onProgress: (progress) => console.log(`${progress.percentage}% uploaded`)
+   * })
+   * 
+   * // Alternative using helper function:
+   * import { Input } from 'telegraf'
+   * await ctx.sendVideo(
+   *   Input.fromReadableStream(stream, 'video.mp4', 1024000),
+   *   { onProgress: (progress) => console.log(`${progress.percentage}% uploaded`) }
+   * )
+   */
   onProgress?: ProgressCallback
 }
 export type ExtraVideoNote = MakeExtra<'sendVideoNote', 'video_note'>

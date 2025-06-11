@@ -148,15 +148,17 @@ async function buildFormDataConfig(
   // Track total size for progress
   let totalSize = 0
   let loadedSize = 0
-  
-  // First pass to calculate total size if progress callback is provided
+    // First pass to calculate total size if progress callback is provided
   if (progressCallback) {
     for (const key of Object.keys(payload)) {
       // @ts-expect-error payload[key] can obviously index payload, but TS doesn't trust us
       const value = payload[key]
       if (value != null && typeof value === 'object' && !Array.isArray(value)) {
         if ('source' in value && value.source) {
-          if (typeof value.source === 'string') {
+          if ('knownSize' in value && typeof value.knownSize === 'number') {
+            // Use explicitly provided size
+            totalSize += value.knownSize
+          } else if (typeof value.source === 'string') {
             try {
               const stats = await stat(value.source)
               if (stats.isFile()) {
@@ -168,6 +170,10 @@ async function buildFormDataConfig(
           } else if (Buffer.isBuffer && Buffer.isBuffer(value.source)) {
             totalSize += value.source.length
           }
+          // Note: For streams without knownSize, we can't track progress
+        } else if ('url' in value && 'knownSize' in value && typeof value.knownSize === 'number') {
+          // Use explicitly provided size for URLs
+          totalSize += value.knownSize
         }
       }
     }

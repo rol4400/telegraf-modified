@@ -18,11 +18,13 @@ export const fromBuffer = (buffer: Buffer, filename?: string): InputFile => ({ s
 
 /**
  * Contents of the stream will be uploaded as file to Telegram using multipart/form-data.
+ * 
+ * If you want progress tracking to work, you should specify the knownSize parameter.
  *
  * 10 MB max size for photos, 50 MB for other files.
  */
 // prettier-ignore
-export const fromReadableStream = (stream: NodeJS.ReadableStream, filename?: string): InputFile => ({ source: stream, filename })
+export const fromReadableStream = (stream: NodeJS.ReadableStream, filename?: string, knownSize?: number): InputFile => ({ source: stream, filename, knownSize })
 
 /**
  * Contents of the URL will be streamed to Telegram.
