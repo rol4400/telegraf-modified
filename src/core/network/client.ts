@@ -148,41 +148,55 @@ async function buildFormDataConfig(
   // Track total size for progress
   let totalSize = 0
   let loadedSize = 0
-    // First pass to calculate total size if progress callback is provided
+  // First pass to calculate total size if progress callback is provided
   if (progressCallback) {
+    console.log('[DEBUG] Progress callback provided, calculating total size...')
     for (const key of Object.keys(payload)) {
       // @ts-expect-error payload[key] can obviously index payload, but TS doesn't trust us
       const value = payload[key]
+      console.log(`[DEBUG] Checking payload key: ${key}, value type: ${typeof value}`)
       if (value != null && typeof value === 'object' && !Array.isArray(value)) {
         if ('source' in value && value.source) {
+          console.log(`[DEBUG] Found source in ${key}, source type: ${typeof value.source}`)
           if ('knownSize' in value && typeof value.knownSize === 'number') {
+            console.log(`[DEBUG] Using knownSize: ${value.knownSize}`)
             // Use explicitly provided size
             totalSize += value.knownSize
           } else if (typeof value.source === 'string') {
+            console.log(`[DEBUG] Source is file path: ${value.source}`)
             try {
               const stats = await stat(value.source)
               if (stats.isFile()) {
+                console.log(`[DEBUG] File size: ${stats.size}`)
                 totalSize += stats.size
               }
-            } catch {
+            } catch (error) {
+              console.log(`[DEBUG] Error getting file stats: ${error}`)
               // Ignore errors for size calculation
             }
           } else if (Buffer.isBuffer && Buffer.isBuffer(value.source)) {
+            console.log(`[DEBUG] Source is Buffer, size: ${value.source.length}`)
             totalSize += value.source.length
+          } else {
+            console.log(`[DEBUG] Source is stream, no knownSize provided - progress tracking disabled`)
           }
           // Note: For streams without knownSize, we can't track progress
         } else if ('url' in value && 'knownSize' in value && typeof value.knownSize === 'number') {
+          console.log(`[DEBUG] Found URL with knownSize: ${value.knownSize}`)
           // Use explicitly provided size for URLs
           totalSize += value.knownSize
         }
       }
     }
+    console.log(`[DEBUG] Total calculated size: ${totalSize}`)
   }
-  
-  await Promise.all(
+    await Promise.all(
     Object.keys(payload).map((key) =>
       // @ts-expect-error payload[key] can obviously index payload, but TS doesn't trust us
-      attachFormValue(formData, key, payload[key], agent, progressCallback, totalSize, () => loadedSize, (size) => { loadedSize += size })
+      attachFormValue(formData, key, payload[key], agent, progressCallback, totalSize, () => loadedSize, (size) => { 
+        loadedSize += size
+        console.log(`[DEBUG] Added ${size} bytes, total loaded: ${loadedSize}/${totalSize}`)
+      })
     )
   )
   return {
@@ -283,8 +297,10 @@ async function attachFormMedia(
   getLoadedSize?: () => number,
   addLoadedSize?: (size: number) => void
 ) {
+  console.log(`[DEBUG] attachFormMedia called for ${id}, progressCallback: ${!!progressCallback}, totalSize: ${totalSize}`)
   let fileName = media.filename ?? `${id}.${DEFAULT_EXTENSIONS[id] ?? 'dat'}`
   if ('url' in media && media.url !== undefined) {
+    console.log(`[DEBUG] Processing URL media: ${media.url}`)
     const timeout = 1_500_000 // ms
     const res = await fetch(media.url, { agent, timeout })
     return form.addPart({
@@ -295,8 +311,10 @@ async function attachFormMedia(
     })
   }
   if ('source' in media && media.source) {
+    console.log(`[DEBUG] Processing source media, type: ${typeof media.source}`)
     let mediaSource = media.source
     if (typeof media.source === 'string') {
+      console.log(`[DEBUG] Source is file path: ${media.source}`)
       const source = await realpath(media.source)
       if ((await stat(source)).isFile()) {
         fileName = media.filename ?? path.basename(media.source)
@@ -304,38 +322,56 @@ async function attachFormMedia(
       } else {
         throw new TypeError(`Unable to upload '${media.source}', not a file`)
       }
-    }    if (isStream(mediaSource) || Buffer.isBuffer(mediaSource)) {
+    }
+
+    if (isStream(mediaSource) || Buffer.isBuffer(mediaSource)) {
+      console.log(`[DEBUG] Media is stream or buffer, progressCallback: ${!!progressCallback}, totalSize: ${totalSize}`)
       let body = mediaSource
       
       // Add progress tracking if callback is provided
       if (progressCallback && totalSize && getLoadedSize && addLoadedSize) {
+        console.log(`[DEBUG] Setting up progress tracking...`)
         if (Buffer.isBuffer(mediaSource)) {
+          console.log(`[DEBUG] Buffer progress tracking, size: ${mediaSource.length}`)
           // For buffers, immediately add the size and call progress
           addLoadedSize(mediaSource.length)
           const loaded = getLoadedSize()
-          progressCallback({
+          const progress = {
             loaded,
             total: totalSize,
             percentage: Math.round((loaded / totalSize) * 100)
-          })
+          }
+          console.log(`[DEBUG] Calling progress callback with:`, progress)
+          progressCallback(progress)
         } else if (isStream(mediaSource)) {
+          console.log(`[DEBUG] Stream progress tracking setup`)
           // For streams, wrap with a transform to track progress
           const progressStream = new Transform({
             transform(chunk: any, encoding: any, callback: any) {
               if (Buffer.isBuffer(chunk)) {
+                console.log(`[DEBUG] Stream chunk: ${chunk.length} bytes`)
                 addLoadedSize(chunk.length)
                 const loaded = getLoadedSize()
-                progressCallback({
+                const progress = {
                   loaded,
                   total: totalSize,
                   percentage: Math.round((loaded / totalSize) * 100)
-                })
+                }
+                console.log(`[DEBUG] Calling progress callback with:`, progress)
+                progressCallback(progress)
               }
               callback(null, chunk)
             }
           })
           body = mediaSource.pipe(progressStream)
         }
+      } else {
+        console.log(`[DEBUG] Progress tracking skipped - missing requirements:`, {
+          hasProgressCallback: !!progressCallback,
+          hasTotalSize: !!totalSize,
+          hasGetLoadedSize: !!getLoadedSize,
+          hasAddLoadedSize: !!addLoadedSize
+        })
       }
       
       form.addPart({
@@ -419,12 +455,12 @@ class ApiClient {
 
   get webhookReply() {
     return this.options.webhookReply
-  }
-  async callApi<M extends keyof Telegram>(
+  }  async callApi<M extends keyof Telegram>(
     method: M,
     payload: Opts<M>,
     { signal, onProgress }: ApiClient.CallApiOptions = {}
   ): Promise<ReturnType<Telegram[M]>> {
+    console.log(`[DEBUG] callApi called for method: ${method}, onProgress: ${!!onProgress}`)
     const { token, options, response } = this
 
     if (

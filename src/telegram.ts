@@ -364,13 +364,14 @@ export class Telegram extends ApiClient {
    * Send video files, Telegram clients support mp4 videos (other formats may be sent as Document).
    * Bots can currently send video files of up to 50 MB in size, this limit may be changed in the future.
    * @param chatId Unique identifier for the target chat or username of the target channel (in the format @channelusername)
-   */
-  sendVideo(
+   */  sendVideo(
     chatId: number | string,
     video: tg.Opts<'sendVideo'>['video'],
     extra?: tt.ExtraVideo
   ) {
+    console.log(`[DEBUG] Telegram.sendVideo called, extra:`, extra)
     const { onProgress, ...restExtra } = extra || {}
+    console.log(`[DEBUG] Extracted onProgress: ${!!onProgress}, restExtra:`, restExtra)
     return this.callApi('sendVideo', {
       chat_id: chatId,
       video,
