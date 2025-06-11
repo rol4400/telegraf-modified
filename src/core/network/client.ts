@@ -5,6 +5,7 @@ import { stat, realpath } from 'fs/promises'
 import * as http from 'http'
 import * as https from 'https'
 import * as path from 'path'
+import { Transform } from 'stream'
 import fetch, { RequestInit } from 'node-fetch'
 import { hasProp, hasPropType } from '../helpers/check'
 import { InputFile, Opts, Telegram } from '../types/typegram'
@@ -16,6 +17,15 @@ import { URL } from 'url'
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const debug = require('debug')('telegraf:client')
 const { isStream } = MultipartStream
+
+// Progress callback types
+export interface UploadProgress {
+  loaded: number
+  total: number
+  percentage: number
+}
+
+export type ProgressCallback = (progress: UploadProgress) => void
 
 const WEBHOOK_REPLY_METHOD_ALLOWLIST = new Set<keyof Telegram>([
   'answerCallbackQuery',
@@ -48,9 +58,12 @@ namespace ApiClient {
     webhookReply: boolean
     testEnv: boolean
   }
-
   export interface CallApiOptions {
     signal?: AbortSignal
+    /**
+     * Progress callback for file uploads
+     */
+    onProgress?: ProgressCallback
   }
 }
 
@@ -122,19 +135,48 @@ const FORM_DATA_JSON_FIELDS = [
 
 async function buildFormDataConfig(
   payload: Opts<keyof Telegram>,
-  agent: ApiClient.Agent
-) {
-  for (const field of FORM_DATA_JSON_FIELDS) {
+  agent: ApiClient.Agent,
+  progressCallback?: ProgressCallback
+) {  for (const field of FORM_DATA_JSON_FIELDS) {
     if (hasProp(payload, field) && typeof payload[field] !== 'string') {
       payload[field] = JSON.stringify(payload[field])
     }
   }
   const boundary = crypto.randomBytes(32).toString('hex')
   const formData = new MultipartStream(boundary)
+  
+  // Track total size for progress
+  let totalSize = 0
+  let loadedSize = 0
+  
+  // First pass to calculate total size if progress callback is provided
+  if (progressCallback) {
+    for (const key of Object.keys(payload)) {
+      // @ts-expect-error payload[key] can obviously index payload, but TS doesn't trust us
+      const value = payload[key]
+      if (value != null && typeof value === 'object' && !Array.isArray(value)) {
+        if ('source' in value && value.source) {
+          if (typeof value.source === 'string') {
+            try {
+              const stats = await stat(value.source)
+              if (stats.isFile()) {
+                totalSize += stats.size
+              }
+            } catch {
+              // Ignore errors for size calculation
+            }
+          } else if (Buffer.isBuffer && Buffer.isBuffer(value.source)) {
+            totalSize += value.source.length
+          }
+        }
+      }
+    }
+  }
+  
   await Promise.all(
     Object.keys(payload).map((key) =>
       // @ts-expect-error payload[key] can obviously index payload, but TS doesn't trust us
-      attachFormValue(formData, key, payload[key], agent)
+      attachFormValue(formData, key, payload[key], agent, progressCallback, totalSize, () => loadedSize, (size) => { loadedSize += size })
     )
   )
   return {
@@ -152,7 +194,11 @@ async function attachFormValue(
   form: MultipartStream,
   id: string,
   value: unknown,
-  agent: ApiClient.Agent
+  agent: ApiClient.Agent,
+  progressCallback?: ProgressCallback,
+  totalSize?: number,
+  getLoadedSize?: () => number,
+  addLoadedSize?: (size: number) => void
 ) {
   if (value == null) {
     return
@@ -167,10 +213,9 @@ async function attachFormValue(
       body: `${value}`,
     })
     return
-  }
-  if (id === 'thumb' || id === 'thumbnail') {
+  }  if (id === 'thumb' || id === 'thumbnail') {
     const attachmentId = crypto.randomBytes(16).toString('hex')
-    await attachFormMedia(form, value as InputFile, attachmentId, agent)
+    await attachFormMedia(form, value as InputFile, attachmentId, agent, progressCallback, totalSize, getLoadedSize, addLoadedSize)
     return form.addPart({
       headers: { 'content-disposition': `form-data; name="${id}"` },
       body: `attach://${attachmentId}`,
@@ -183,11 +228,11 @@ async function attachFormValue(
           return await Promise.resolve(item)
         }
         const attachmentId = crypto.randomBytes(16).toString('hex')
-        await attachFormMedia(form, item.media, attachmentId, agent)
+        await attachFormMedia(form, item.media, attachmentId, agent, progressCallback, totalSize, getLoadedSize, addLoadedSize)
         const thumb = item.thumb ?? item.thumbnail
         if (typeof thumb === 'object') {
           const thumbAttachmentId = crypto.randomBytes(16).toString('hex')
-          await attachFormMedia(form, thumb, thumbAttachmentId, agent)
+          await attachFormMedia(form, thumb, thumbAttachmentId, agent, progressCallback, totalSize, getLoadedSize, addLoadedSize)
           return {
             ...item,
             media: `attach://${attachmentId}`,
@@ -209,9 +254,8 @@ async function attachFormValue(
     hasProp(value, 'type') &&
     typeof value.media !== 'undefined' &&
     typeof value.type !== 'undefined'
-  ) {
-    const attachmentId = crypto.randomBytes(16).toString('hex')
-    await attachFormMedia(form, value.media as InputFile, attachmentId, agent)
+  ) {    const attachmentId = crypto.randomBytes(16).toString('hex')
+    await attachFormMedia(form, value.media as InputFile, attachmentId, agent, progressCallback, totalSize, getLoadedSize, addLoadedSize)
     return form.addPart({
       headers: { 'content-disposition': `form-data; name="${id}"` },
       body: JSON.stringify({
@@ -220,14 +264,18 @@ async function attachFormValue(
       }),
     })
   }
-  return await attachFormMedia(form, value as InputFile, id, agent)
+  return await attachFormMedia(form, value as InputFile, id, agent, progressCallback, totalSize, getLoadedSize, addLoadedSize)
 }
 
 async function attachFormMedia(
   form: MultipartStream,
   media: InputFile,
   id: string,
-  agent: ApiClient.Agent
+  agent: ApiClient.Agent,
+  progressCallback?: ProgressCallback,
+  totalSize?: number,
+  getLoadedSize?: () => number,
+  addLoadedSize?: (size: number) => void
 ) {
   let fileName = media.filename ?? `${id}.${DEFAULT_EXTENSIONS[id] ?? 'dat'}`
   if ('url' in media && media.url !== undefined) {
@@ -250,13 +298,45 @@ async function attachFormMedia(
       } else {
         throw new TypeError(`Unable to upload '${media.source}', not a file`)
       }
-    }
-    if (isStream(mediaSource) || Buffer.isBuffer(mediaSource)) {
+    }    if (isStream(mediaSource) || Buffer.isBuffer(mediaSource)) {
+      let body = mediaSource
+      
+      // Add progress tracking if callback is provided
+      if (progressCallback && totalSize && getLoadedSize && addLoadedSize) {
+        if (Buffer.isBuffer(mediaSource)) {
+          // For buffers, immediately add the size and call progress
+          addLoadedSize(mediaSource.length)
+          const loaded = getLoadedSize()
+          progressCallback({
+            loaded,
+            total: totalSize,
+            percentage: Math.round((loaded / totalSize) * 100)
+          })
+        } else if (isStream(mediaSource)) {
+          // For streams, wrap with a transform to track progress
+          const progressStream = new Transform({
+            transform(chunk: any, encoding: any, callback: any) {
+              if (Buffer.isBuffer(chunk)) {
+                addLoadedSize(chunk.length)
+                const loaded = getLoadedSize()
+                progressCallback({
+                  loaded,
+                  total: totalSize,
+                  percentage: Math.round((loaded / totalSize) * 100)
+                })
+              }
+              callback(null, chunk)
+            }
+          })
+          body = mediaSource.pipe(progressStream)
+        }
+      }
+      
       form.addPart({
         headers: {
           'content-disposition': `form-data; name="${id}"; filename="${fileName}"`,
         },
-        body: mediaSource,
+        body,
       })
     }
   }
@@ -334,11 +414,10 @@ class ApiClient {
   get webhookReply() {
     return this.options.webhookReply
   }
-
   async callApi<M extends keyof Telegram>(
     method: M,
     payload: Opts<M>,
-    { signal }: ApiClient.CallApiOptions = {}
+    { signal, onProgress }: ApiClient.CallApiOptions = {}
   ): Promise<ReturnType<Telegram[M]>> {
     const { token, options, response } = this
 
@@ -365,7 +444,8 @@ class ApiClient {
     const config: RequestInit = includesMedia(payload)
       ? await buildFormDataConfig(
           { method, ...payload },
-          options.attachmentAgent
+          options.attachmentAgent,
+          onProgress
         )
       : await buildJSONConfig(payload)
     const apiUrl = new URL(

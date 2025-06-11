@@ -740,16 +740,16 @@ export class Context<U extends Deunionize<tg.Update> = tg.Update> {
    */
   replyWithSticker(...args: Shorthand<'sendSticker'>) {
     return this.sendSticker(...args)
-  }
-
-  /**
+  }  /**
    * @see https://core.telegram.org/bots/api#sendvideo
    */
   sendVideo(video: string | tg.InputFile, extra?: tt.ExtraVideo) {
     this.assert(this.chat, 'sendVideo')
+    const { onProgress, ...restExtra } = extra || {}
     return this.telegram.sendVideo(this.chat.id, video, {
       message_thread_id: getThreadId(this),
-      ...extra,
+      ...restExtra,
+      onProgress,
     })
   }
 

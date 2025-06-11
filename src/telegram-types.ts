@@ -14,6 +14,7 @@ import {
 
 import { UnionKeys } from './core/helpers/deunionize'
 import { FmtString } from './format'
+import type { ProgressCallback } from './core/network/client'
 
 export { Markup } from './markup'
 
@@ -132,7 +133,9 @@ export type ExtraVenue = MakeExtra<
   'sendVenue',
   'latitude' | 'longitude' | 'title' | 'address'
 >
-export type ExtraVideo = MakeExtra<'sendVideo', 'video'>
+export type ExtraVideo = MakeExtra<'sendVideo', 'video'> & {
+  onProgress?: ProgressCallback
+}
 export type ExtraVideoNote = MakeExtra<'sendVideoNote', 'video_note'>
 export type ExtraVoice = MakeExtra<'sendVoice', 'voice'>
 export type ExtraBanChatSenderChat = MakeExtra<
