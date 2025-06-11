@@ -279,7 +279,7 @@ async function attachFormMedia(
 ) {
   let fileName = media.filename ?? `${id}.${DEFAULT_EXTENSIONS[id] ?? 'dat'}`
   if ('url' in media && media.url !== undefined) {
-    const timeout = 500_000 // ms
+    const timeout = 1_500_000 // ms
     const res = await fetch(media.url, { agent, timeout })
     return form.addPart({
       headers: {
@@ -455,7 +455,7 @@ class ApiClient {
     config.agent = options.agent
     // @ts-expect-error AbortSignal shim is missing some props from Request.AbortSignal
     config.signal = signal
-    config.timeout = 500_000 // ms
+    config.timeout = 1_500_000 // ms
     const res = await fetch(apiUrl, config).catch(redactToken)
     if (res.status >= 500) {
       const errorPayload = {
