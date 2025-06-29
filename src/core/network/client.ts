@@ -136,8 +136,12 @@ const FORM_DATA_JSON_FIELDS = [
 async function buildFormDataConfig(
   payload: Opts<keyof Telegram>,
   agent: ApiClient.Agent,
-  progressCallback?: ProgressCallback
-) {  for (const field of FORM_DATA_JSON_FIELDS) {
+  progressCallback?: ProgressCallback,
+  totalSize?: number,
+  getLoadedSize?: () => number,
+  addLoadedSize?: (size: number) => void
+) {
+  for (const field of FORM_DATA_JSON_FIELDS) {
     if (hasProp(payload, field) && typeof payload[field] !== 'string') {
       payload[field] = JSON.stringify(payload[field])
     }
@@ -145,58 +149,10 @@ async function buildFormDataConfig(
   const boundary = crypto.randomBytes(32).toString('hex')
   const formData = new MultipartStream(boundary)
   
-  // Track total size for progress
-  let totalSize = 0
-  let loadedSize = 0
-  // First pass to calculate total size if progress callback is provided
-  if (progressCallback) {
-    console.log('[DEBUG] Progress callback provided, calculating total size...')
-    for (const key of Object.keys(payload)) {
-      // @ts-expect-error payload[key] can obviously index payload, but TS doesn't trust us
-      const value = payload[key]
-      console.log(`[DEBUG] Checking payload key: ${key}, value type: ${typeof value}`)
-      if (value != null && typeof value === 'object' && !Array.isArray(value)) {
-        if ('source' in value && value.source) {
-          console.log(`[DEBUG] Found source in ${key}, source type: ${typeof value.source}`)
-          if ('knownSize' in value && typeof value.knownSize === 'number') {
-            console.log(`[DEBUG] Using knownSize: ${value.knownSize}`)
-            // Use explicitly provided size
-            totalSize += value.knownSize
-          } else if (typeof value.source === 'string') {
-            console.log(`[DEBUG] Source is file path: ${value.source}`)
-            try {
-              const stats = await stat(value.source)
-              if (stats.isFile()) {
-                console.log(`[DEBUG] File size: ${stats.size}`)
-                totalSize += stats.size
-              }
-            } catch (error) {
-              console.log(`[DEBUG] Error getting file stats: ${error}`)
-              // Ignore errors for size calculation
-            }
-          } else if (Buffer.isBuffer && Buffer.isBuffer(value.source)) {
-            console.log(`[DEBUG] Source is Buffer, size: ${value.source.length}`)
-            totalSize += value.source.length
-          } else {
-            console.log(`[DEBUG] Source is stream, no knownSize provided - progress tracking disabled`)
-          }
-          // Note: For streams without knownSize, we can't track progress
-        } else if ('url' in value && 'knownSize' in value && typeof value.knownSize === 'number') {
-          console.log(`[DEBUG] Found URL with knownSize: ${value.knownSize}`)
-          // Use explicitly provided size for URLs
-          totalSize += value.knownSize
-        }
-      }
-    }
-    console.log(`[DEBUG] Total calculated size: ${totalSize}`)
-  }
-    await Promise.all(
+  await Promise.all(
     Object.keys(payload).map((key) =>
       // @ts-expect-error payload[key] can obviously index payload, but TS doesn't trust us
-      attachFormValue(formData, key, payload[key], agent, progressCallback, totalSize, () => loadedSize, (size) => { 
-        loadedSize += size
-        console.log(`[DEBUG] Added ${size} bytes, total loaded: ${loadedSize}/${totalSize}`)
-      })
+      attachFormValue(formData, key, payload[key], agent, progressCallback, totalSize, getLoadedSize, addLoadedSize)
     )
   )
   return {
@@ -483,13 +439,70 @@ class ApiClient {
 
     debug('HTTP call', method, payload)
 
-    const config: RequestInit = includesMedia(payload)
-      ? await buildFormDataConfig(
-          { method, ...payload },
-          options.attachmentAgent,
-          onProgress
-        )
-      : await buildJSONConfig(payload)
+    let config: RequestInit
+    if (includesMedia(payload)) {
+      // Track total size for progress
+      let totalSize = 0
+      let loadedSize = 0
+      
+      // First pass to calculate total size if progress callback is provided
+      if (onProgress) {
+        console.log('[DEBUG] Progress callback provided, calculating total size...')
+        for (const key of Object.keys(payload)) {
+          // @ts-expect-error payload[key] can obviously index payload, but TS doesn't trust us
+          const value = payload[key]
+          console.log(`[DEBUG] Checking payload key: ${key}, value type: ${typeof value}`)
+          if (value != null && typeof value === 'object' && !Array.isArray(value)) {
+            if ('source' in value && value.source) {
+              console.log(`[DEBUG] Found source in ${key}, source type: ${typeof value.source}`)
+              if ('knownSize' in value && typeof value.knownSize === 'number') {
+                console.log(`[DEBUG] Using knownSize: ${value.knownSize}`)
+                // Use explicitly provided size
+                totalSize += value.knownSize
+              } else if (typeof value.source === 'string') {
+                console.log(`[DEBUG] Source is file path: ${value.source}`)
+                try {
+                  const stats = await stat(value.source)
+                  if (stats.isFile()) {
+                    console.log(`[DEBUG] File size: ${stats.size}`)
+                    totalSize += stats.size
+                  }
+                } catch (error) {
+                  console.log(`[DEBUG] Error getting file stats: ${error}`)
+                  // Ignore errors for size calculation
+                }
+              } else if (Buffer.isBuffer && Buffer.isBuffer(value.source)) {
+                console.log(`[DEBUG] Source is Buffer, size: ${value.source.length}`)
+                totalSize += value.source.length
+              } else {
+                console.log(`[DEBUG] Source is stream, no knownSize provided - progress tracking disabled`)
+              }
+              // Note: For streams without knownSize, we can't track progress
+            } else if ('url' in value && 'knownSize' in value && typeof value.knownSize === 'number') {
+              console.log(`[DEBUG] Found URL with knownSize: ${value.knownSize}`)
+              // Use explicitly provided size for URLs
+              totalSize += value.knownSize
+            }
+          }
+        }
+        console.log(`[DEBUG] Total calculated size: ${totalSize}`)
+      }
+
+      config = await buildFormDataConfig(
+        { method, ...payload },
+        options.attachmentAgent,
+        onProgress,
+        totalSize,
+        () => loadedSize,
+        (size) => { 
+          loadedSize += size
+          console.log(`[DEBUG] Added ${size} bytes, total loaded: ${loadedSize}/${totalSize}`)
+        }
+      )
+    } else {
+      config = await buildJSONConfig(payload)
+    }
+    
     const apiUrl = new URL(
       `./${options.apiMode}${token}${options.testEnv ? '/test' : ''}/${method}`,
       options.apiRoot
