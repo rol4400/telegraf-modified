@@ -96,6 +96,7 @@
   "dependencies": {
     "@telegraf/types": "^7.1.0",
     "abort-controller": "^3.0.0",
+    "axios": "^1.10.0",
     "debug": "^4.3.5",
     "mri": "^1.2.0",
     "node-fetch": "^2.7.0",
@@ -104,6 +105,7 @@
     "sandwich-stream": "^2.0.2"
   },
   "devDependencies": {
+    "@types/axios": "^0.9.36",
     "@types/debug": "^4.1.8",
     "@types/node": "^20.4.2",
     "@types/node-fetch": "^2.6.2",
