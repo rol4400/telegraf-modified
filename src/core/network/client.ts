@@ -417,8 +417,9 @@ class ApiClient {
     )
 
     let res: any
-    if (includesMedia(payload)) {
-      // Use axios for multipart uploads with progress tracking
+
+    // Use axios for multipart uploads with progress tracking
+    if (onProgress) {
       const config = await buildFormDataConfig(
         { method, ...payload },
         options.attachmentAgent
@@ -433,7 +434,7 @@ class ApiClient {
         httpsAgent: options.agent,
         httpAgent: options.agent,
         signal: signal,
-        onUploadProgress: onProgress && totalSize > 0 ? (progressEvent: any) => {
+        onUploadProgress: totalSize > 0 ? (progressEvent: any) => {
           console.log(`[DEBUG] Axios upload progress: loaded=${progressEvent.loaded}, total=${progressEvent.total || totalSize}`)
           const progress = {
             loaded: progressEvent.loaded,
@@ -466,13 +467,12 @@ class ApiClient {
         }
       }
     } else {
-      // Use original fetch for JSON requests (no progress needed)
-      const config: RequestInit = await buildJSONConfig(payload)
+      const config = await buildJSONConfig(payload)
       config.agent = options.agent
-      // @ts-expect-error AbortSignal shim is missing some props from Request.AbortSignal
+      // @ts-expect-error AbortSignal shim is missing some props from Request.AbortSignalAdd commentMore actions
       config.signal = signal
       config.timeout = 1_500_000 // ms
-      res = await fetch(apiUrl, config).catch(redactToken)
+      const res = await fetch(apiUrl, config).catch(redactToken)
     }
     if (res.status >= 500) {
       const errorPayload = {
@@ -481,17 +481,12 @@ class ApiClient {
       }
       throw new TelegramError(errorPayload, { method, payload })
     }
-    try {
-      const data = await res.json()
-      if (!data || !data.ok) {
-        debug('API call failed', data)
-        throw new TelegramError(data || { error_code: res.status, description: 'Invalid API response' }, { method, payload })
-      }
-      return data.result
-    } catch (error) {
-      debug('Failed to parse API response', error)
-      throw new TelegramError({ error_code: res.status, description: 'Invalid API response format' }, { method, payload })
+    const data = await res.json()
+    if (!data.ok) {
+      debug('API call failed', data)
+      throw new TelegramError(data, { method, payload })
     }
+    return data.result
   }
 }
 
