@@ -467,12 +467,20 @@ class ApiClient {
         }
       }
     } else {
-      const config = await buildJSONConfig(payload)
+      let config: any;
+      if (includesMedia(payload)) {
+        config = await buildFormDataConfig(
+          { method, ...payload },
+          options.attachmentAgent
+        )
+      } else {
+        config = await buildJSONConfig(payload)
+      }
       config.agent = options.agent
       // @ts-expect-error AbortSignal shim is missing some props from Request.AbortSignalAdd commentMore actions
       config.signal = signal
       config.timeout = 1_500_000 // ms
-      const res = await fetch(apiUrl, config).catch(redactToken)
+      res = await fetch(apiUrl, config).catch(redactToken)
     }
     if (res.status >= 500) {
       const errorPayload = {
