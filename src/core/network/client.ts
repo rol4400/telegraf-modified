@@ -481,12 +481,17 @@ class ApiClient {
       }
       throw new TelegramError(errorPayload, { method, payload })
     }
-    const data = await res.json()
-    if (!data.ok) {
-      debug('API call failed', data)
-      throw new TelegramError(data, { method, payload })
+    try {
+      const data = await res.json()
+      if (!data || !data.ok) {
+        debug('API call failed', data)
+        throw new TelegramError(data || { error_code: res.status, description: 'Invalid API response' }, { method, payload })
+      }
+      return data.result
+    } catch (error) {
+      debug('Failed to parse API response', error)
+      throw new TelegramError({ error_code: res.status, description: 'Invalid API response format' }, { method, payload })
     }
-    return data.result
   }
 }
 
