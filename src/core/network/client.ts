@@ -450,18 +450,20 @@ class ApiClient {
       try {
         res = await axios(axiosConfig)
         // Convert axios response to fetch-like response for compatibility
+        const axiosData = res.data // Store the data before overwriting res
         res = {
           status: res.status,
           statusText: res.statusText,
-          json: () => Promise.resolve(res.data)
+          json: () => Promise.resolve(axiosData)
         }
       } catch (error: any) {
         if (error.response) {
           // Convert axios error to fetch-like response
+          const errorData = error.response.data || {}
           res = {
             status: error.response.status,
             statusText: error.response.statusText,
-            json: () => Promise.resolve(error.response.data || {})
+            json: () => Promise.resolve(errorData)
           }
         } else {
           // Network or other error, apply token redaction and rethrow
@@ -502,18 +504,20 @@ class ApiClient {
         console.log(`[DEBUG] Axios response status: ${res.status}`)
         console.log(`[DEBUG] Axios response data:`, res.data)
         // Convert axios response to fetch-like response for compatibility
+        const axiosData = res.data // Store the data before overwriting res
         res = {
           status: res.status,
           statusText: res.statusText,
-          json: () => Promise.resolve(res.data)
+          json: () => Promise.resolve(axiosData)
         }
       } catch (error: any) {
         if (error.response) {
           // Convert axios error to fetch-like response
+          const errorData = error.response.data || {}
           res = {
             status: error.response.status,
             statusText: error.response.statusText,
-            json: () => Promise.resolve(error.response.data || {})
+            json: () => Promise.resolve(errorData)
           }
         } else {
           // Network or other error, apply token redaction and rethrow
