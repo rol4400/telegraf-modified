@@ -352,7 +352,6 @@ class ApiClient {
     payload: Opts<M>,
     { signal, onProgress }: ApiClient.CallApiOptions = {}
   ): Promise<ReturnType<Telegram[M]>> {
-    console.log(`[DEBUG] callApi called for method: ${method}, onProgress: ${!!onProgress}`)
     const { token, options, response } = this
 
     if (
@@ -376,39 +375,29 @@ class ApiClient {
     // Calculate total size for progress tracking if needed
     let totalSize = 0
     if (onProgress && includesMedia(payload)) {
-      console.log('[DEBUG] Progress callback provided, calculating total size...')
       for (const key of Object.keys(payload)) {
         // @ts-expect-error payload[key] can obviously index payload, but TS doesn't trust us
         const value = payload[key]
-        console.log(`[DEBUG] Checking payload key: ${key}, value type: ${typeof value}`)
         if (value != null && typeof value === 'object' && !Array.isArray(value)) {
           if ('source' in value && value.source) {
-            console.log(`[DEBUG] Found source in ${key}, source type: ${typeof value.source}`)
             if ('knownSize' in value && typeof value.knownSize === 'number') {
-              console.log(`[DEBUG] Using knownSize: ${value.knownSize}`)
               totalSize += value.knownSize
             } else if (typeof value.source === 'string') {
-              console.log(`[DEBUG] Source is file path: ${value.source}`)
               try {
                 const stats = await stat(value.source)
                 if (stats.isFile()) {
-                  console.log(`[DEBUG] File size: ${stats.size}`)
                   totalSize += stats.size
                 }
               } catch (error) {
-                console.log(`[DEBUG] Error getting file stats: ${error}`)
               }
             } else if (Buffer.isBuffer && Buffer.isBuffer(value.source)) {
-              console.log(`[DEBUG] Source is Buffer, size: ${value.source.length}`)
               totalSize += value.source.length
             }
           } else if ('url' in value && 'knownSize' in value && typeof value.knownSize === 'number') {
-            console.log(`[DEBUG] Found URL with knownSize: ${value.knownSize}`)
             totalSize += value.knownSize
           }
         }
       }
-      console.log(`[DEBUG] Total calculated size: ${totalSize}`)
     }
 
     const apiUrl = new URL(
@@ -435,14 +424,13 @@ class ApiClient {
         httpAgent: options.agent,
         signal: signal,
         onUploadProgress: totalSize > 0 ? (progressEvent: any) => {
-          console.log(`[DEBUG] Axios upload progress: loaded=${progressEvent.loaded}, total=${progressEvent.total || totalSize}`)
           const progress = {
             loaded: progressEvent.loaded,
             total: progressEvent.total || totalSize,
             percentage: Math.round((progressEvent.loaded / (progressEvent.total || totalSize)) * 100)
           }
-          console.log(`[DEBUG] Calling progress callback with:`, progress)
-          onProgress(progress)        } : undefined
+          onProgress(progress)        
+        } : undefined
       }
 
       try {
