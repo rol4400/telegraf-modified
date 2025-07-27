@@ -466,8 +466,14 @@ class ApiClient {
             json: () => Promise.resolve(errorData)
           }
         } else {
-          // Network or other error, apply token redaction and rethrow
-          redactToken(error)
+          // Network or other error, apply token redaction but don't throw here
+          // Let the error bubble up so retry logic can handle it
+          console.log(`[DEBUG] Network error occurred:`, error.message)
+          error.message = error.message.replace(
+            /\/(bot|user)(\d+):[^/]+\//,
+            '/$1$2:[REDACTED]/'
+          )
+          throw error
         }
       }
     } else {
@@ -512,8 +518,14 @@ class ApiClient {
             json: () => Promise.resolve(errorData)
           }
         } else {
-          // Network or other error, apply token redaction and rethrow
-          redactToken(error)
+          // Network or other error, apply token redaction but don't throw here
+          // Let the error bubble up so retry logic can handle it
+          console.log(`[DEBUG] Network error occurred:`, error.message)
+          error.message = error.message.replace(
+            /\/(bot|user)(\d+):[^/]+\//,
+            '/$1$2:[REDACTED]/'
+          )
+          throw error
         }
       }
     }
