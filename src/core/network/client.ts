@@ -6,6 +6,7 @@ import * as http from 'http'
 import * as https from 'https'
 import * as path from 'path'
 import { Transform } from 'stream'
+import { spawn } from 'child_process'
 import axios from 'axios'
 import { hasProp, hasPropType } from '../helpers/check'
 import { InputFile, Opts, Telegram } from '../types/typegram'
@@ -26,6 +27,70 @@ export interface UploadProgress {
 }
 
 export type ProgressCallback = (progress: UploadProgress) => void
+
+// Video metadata extraction function
+async function extractVideoMetadata(filePath: string): Promise<{ width?: number; height?: number; duration?: number }> {
+  return new Promise((resolve, reject) => {
+    // Use a simple ffprobe-like approach with a timeout
+    const ffprobe = spawn('ffprobe', [
+      '-v', 'quiet',
+      '-print_format', 'json',
+      '-show_format',
+      '-show_streams',
+      filePath
+    ])
+    
+    let stdout = ''
+    let stderr = ''
+    
+    ffprobe.stdout.on('data', (data: Buffer) => {
+      stdout += data.toString()
+    })
+    
+    ffprobe.stderr.on('data', (data: Buffer) => {
+      stderr += data.toString()
+    })
+    
+    ffprobe.on('close', (code: number) => {
+      if (code !== 0) {
+        console.log(`[DEBUG] ffprobe failed with code ${code}, stderr: ${stderr}`)
+        resolve({})
+        return
+      }
+      
+      try {
+        const data = JSON.parse(stdout)
+        const videoStream = data.streams?.find((stream: any) => stream.codec_type === 'video')
+        
+        if (videoStream) {
+          const metadata = {
+            width: videoStream.width,
+            height: videoStream.height,
+            duration: data.format?.duration ? Math.round(parseFloat(data.format.duration)) : undefined
+          }
+          console.log(`[DEBUG] Extracted video metadata:`, metadata)
+          resolve(metadata)
+        } else {
+          resolve({})
+        }
+      } catch (error) {
+        console.log(`[DEBUG] Failed to parse ffprobe output:`, error)
+        resolve({})
+      }
+    })
+    
+    ffprobe.on('error', (error: Error) => {
+      console.log(`[DEBUG] ffprobe error:`, error.message)
+      resolve({})
+    })
+    
+    // Timeout after 10 seconds
+    setTimeout(() => {
+      ffprobe.kill('SIGTERM')
+      resolve({})
+    }, 10000)
+  })
+}
 
 const WEBHOOK_REPLY_METHOD_ALLOWLIST = new Set<keyof Telegram>([
   'answerCallbackQuery',
@@ -136,7 +201,7 @@ const FORM_DATA_JSON_FIELDS = [
 async function buildFormDataConfig(
   payload: Opts<keyof Telegram>,
   agent: ApiClient.Agent
-) {
+): Promise<{ method: string; compress: boolean; headers: any; body: MultipartStream; videoMetadata?: { width?: number; height?: number; duration?: number } }> {
   for (const field of FORM_DATA_JSON_FIELDS) {
     if (hasProp(payload, field) && typeof payload[field] !== 'string') {
       payload[field] = JSON.stringify(payload[field])
@@ -144,13 +209,19 @@ async function buildFormDataConfig(
   }
   const boundary = crypto.randomBytes(32).toString('hex')
   const formData = new MultipartStream(boundary)
+  let videoMetadata: { width?: number; height?: number; duration?: number } = {}
   
-  await Promise.all(
-    Object.keys(payload).map((key) =>
+  const attachResults = await Promise.all(
+    Object.keys(payload).map(async (key) => {
       // @ts-expect-error payload[key] can obviously index payload, but TS doesn't trust us
-      attachFormValue(formData, key, payload[key], agent)
-    )
+      const metadata = await attachFormValue(formData, key, payload[key], agent)
+      if (key === 'video' && metadata && (metadata.width || metadata.height || metadata.duration)) {
+        videoMetadata = metadata
+      }
+      return metadata
+    })
   )
+  
   return {
     method: 'POST',
     compress: true,
@@ -159,6 +230,7 @@ async function buildFormDataConfig(
       connection: 'keep-alive',
     },
     body: formData,
+    videoMetadata
   }
 }
 
@@ -167,9 +239,9 @@ async function attachFormValue(
   id: string,
   value: unknown,
   agent: ApiClient.Agent
-) {
+): Promise<{ width?: number; height?: number; duration?: number }> {
   if (value == null) {
-    return
+    return {}
   }
   if (
     typeof value === 'string' ||
@@ -180,14 +252,15 @@ async function attachFormValue(
       headers: { 'content-disposition': `form-data; name="${id}"` },
       body: `${value}`,
     })
-    return
+    return {}
   }  if (id === 'thumb' || id === 'thumbnail') {
     const attachmentId = crypto.randomBytes(16).toString('hex')
     await attachFormMedia(form, value as InputFile, attachmentId, agent)
-    return form.addPart({
+    form.addPart({
       headers: { 'content-disposition': `form-data; name="${id}"` },
       body: `attach://${attachmentId}`,
     })
+    return {}
   }
   if (Array.isArray(value)) {
     const items = await Promise.all(
@@ -210,10 +283,11 @@ async function attachFormValue(
         return { ...item, media: `attach://${attachmentId}` }
       })
     )
-    return form.addPart({
+    form.addPart({
       headers: { 'content-disposition': `form-data; name="${id}"` },
       body: JSON.stringify(items),
     })
+    return {}
   }
   if (
     value &&
@@ -224,13 +298,14 @@ async function attachFormValue(
     typeof value.type !== 'undefined'
   ) {    const attachmentId = crypto.randomBytes(16).toString('hex')
     await attachFormMedia(form, value.media as InputFile, attachmentId, agent)
-    return form.addPart({
+    form.addPart({
       headers: { 'content-disposition': `form-data; name="${id}"` },
       body: JSON.stringify({
         ...value,
         media: `attach://${attachmentId}`,
       }),
     })
+    return {}
   }
   return await attachFormMedia(form, value as InputFile, id, agent)
 }
@@ -240,8 +315,10 @@ async function attachFormMedia(
   media: InputFile,
   id: string,
   agent: ApiClient.Agent
-) {
+): Promise<{ width?: number; height?: number; duration?: number }> {
   let fileName = media.filename ?? `${id}.${DEFAULT_EXTENSIONS[id] ?? 'dat'}`
+  let videoMetadata: { width?: number; height?: number; duration?: number } = {}
+  
   if ('url' in media && media.url !== undefined) {
     const timeout = 1_500_000 // ms
     try {
@@ -252,12 +329,13 @@ async function attachFormMedia(
         timeout,
         ...(agent && { httpsAgent: agent, httpAgent: agent })
       })
-      return form.addPart({
+      form.addPart({
         headers: {
           'content-disposition': `form-data; name="${id}"; filename="${fileName}"`,
         },
         body: res.data as any,
       })
+      return videoMetadata
     } catch (error: any) {
       // Handle axios errors by rethrowing them properly
       if (error.response) {
@@ -274,6 +352,15 @@ async function attachFormMedia(
       if ((await stat(source)).isFile()) {
         fileName = media.filename ?? path.basename(media.source)
         mediaSource = await fs.createReadStream(media.source)
+        
+        // Extract video metadata for video files
+        if (id === 'video' && (fileName.endsWith('.mp4') || fileName.endsWith('.mov') || fileName.endsWith('.avi'))) {
+          try {
+            videoMetadata = await extractVideoMetadata(source)
+          } catch (error) {
+            console.log(`[DEBUG] Failed to extract video metadata from ${source}:`, error)
+          }
+        }
       } else {
         throw new TypeError(`Unable to upload '${media.source}', not a file`)
       }
@@ -288,6 +375,8 @@ async function attachFormMedia(
       })
     }
   }
+  
+  return videoMetadata
 }
 
 async function answerToWebhook(
@@ -309,7 +398,7 @@ async function answerToWebhook(
   )
   if (!response.headersSent) {
     for (const [key, value] of Object.entries(headers)) {
-      response.setHeader(key, value)
+      response.setHeader(key, value as string)
     }
   }
   await new Promise((resolve) => {
@@ -428,6 +517,32 @@ class ApiClient {
         options.attachmentAgent
       )
       
+      // Inject video metadata into axios data if available
+      if (method === 'sendVideo' && config.videoMetadata) {
+        const { width, height, duration } = config.videoMetadata
+        const videoPayload = payload as any // Type assertion to access video properties
+        
+        if (width && !videoPayload.width) {
+          config.body.addPart({
+            headers: { 'content-disposition': 'form-data; name="width"' },
+            body: `${width}`,
+          })
+        }
+        if (height && !videoPayload.height) {
+          config.body.addPart({
+            headers: { 'content-disposition': 'form-data; name="height"' },
+            body: `${height}`,
+          })
+        }
+        if (duration && !videoPayload.duration) {
+          config.body.addPart({
+            headers: { 'content-disposition': 'form-data; name="duration"' },
+            body: `${duration}`,
+          })
+        }
+        console.log(`[DEBUG] Injected video metadata: width=${width}, height=${height}, duration=${duration}`)
+      }
+      
       const axiosConfig: any = {
         method: 'POST',
         url: apiUrl.toString(),
@@ -484,6 +599,32 @@ class ApiClient {
           { method, ...payload },
           options.attachmentAgent
         )
+        
+        // Inject video metadata into axios data if available
+        if (method === 'sendVideo' && config.videoMetadata) {
+          const { width, height, duration } = config.videoMetadata
+          const videoPayload = payload as any // Type assertion to access video properties
+          
+          if (width && !videoPayload.width) {
+            config.body.addPart({
+              headers: { 'content-disposition': 'form-data; name="width"' },
+              body: `${width}`,
+            })
+          }
+          if (height && !videoPayload.height) {
+            config.body.addPart({
+              headers: { 'content-disposition': 'form-data; name="height"' },
+              body: `${height}`,
+            })
+          }
+          if (duration && !videoPayload.duration) {
+            config.body.addPart({
+              headers: { 'content-disposition': 'form-data; name="duration"' },
+              body: `${duration}`,
+            })
+          }
+          console.log(`[DEBUG] Injected video metadata (non-progress): width=${width}, height=${height}, duration=${duration}`)
+        }
       } else {
         config = buildJSONConfig(payload)
       }
