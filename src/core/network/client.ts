@@ -494,15 +494,7 @@ class ApiClient {
       }
 
       try {
-        console.log(`[DEBUG] Making axios request to: ${axiosConfig.url}`)
-        console.log(`[DEBUG] Request config:`, { 
-          method: axiosConfig.method, 
-          headers: axiosConfig.headers, 
-          timeout: axiosConfig.timeout 
-        })
         res = await axios(axiosConfig)
-        console.log(`[DEBUG] Axios response status: ${res.status}`)
-        console.log(`[DEBUG] Axios response data:`, res.data)
         // Convert axios response to fetch-like response for compatibility
         const axiosData = res.data // Store the data before overwriting res
         res = {
@@ -533,9 +525,7 @@ class ApiClient {
       throw new TelegramError(errorPayload, { method, payload })
     }
     
-    console.log(`[DEBUG] Response status: ${res.status}, method: ${method}`)
     const data = await res.json()
-    console.log(`[DEBUG] Response data:`, data)
     
     if (!data || !data.ok) {
       debug('API call failed', data)
