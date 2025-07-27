@@ -6,7 +6,6 @@ import * as http from 'http'
 import * as https from 'https'
 import * as path from 'path'
 import { Transform } from 'stream'
-import fetch, { RequestInit } from 'node-fetch'
 import axios from 'axios'
 import { hasProp, hasPropType } from '../helpers/check'
 import { InputFile, Opts, Telegram } from '../types/typegram'
@@ -117,13 +116,13 @@ function replacer(_: unknown, value: unknown) {
   return value
 }
 
-function buildJSONConfig(payload: unknown): Promise<RequestInit> {
-  return Promise.resolve({
+function buildJSONConfig(payload: unknown) {
+  return {
     method: 'POST',
     compress: true,
     headers: { 'content-type': 'application/json', connection: 'keep-alive' },
     body: JSON.stringify(payload, replacer),
-  })
+  }
 }
 
 const FORM_DATA_JSON_FIELDS = [
@@ -245,13 +244,28 @@ async function attachFormMedia(
   let fileName = media.filename ?? `${id}.${DEFAULT_EXTENSIONS[id] ?? 'dat'}`
   if ('url' in media && media.url !== undefined) {
     const timeout = 1_500_000 // ms
-    const res = await fetch(media.url, { agent, timeout })
-    return form.addPart({
-      headers: {
-        'content-disposition': `form-data; name="${id}"; filename="${fileName}"`,
-      },
-      body: res.body,
-    })
+    try {
+      const res = await axios({
+        method: 'GET',
+        url: media.url,
+        responseType: 'stream',
+        timeout,
+        ...(agent && { httpsAgent: agent, httpAgent: agent })
+      })
+      return form.addPart({
+        headers: {
+          'content-disposition': `form-data; name="${id}"; filename="${fileName}"`,
+        },
+        body: res.data as any,
+      })
+    } catch (error: any) {
+      // Handle axios errors by rethrowing them properly
+      if (error.response) {
+        throw new Error(`Failed to fetch media from URL: ${error.response.status} ${error.response.statusText}`)
+      } else {
+        throw new Error(`Failed to fetch media from URL: ${error.message}`)
+      }
+    }
   }
   if ('source' in media && media.source) {
     let mediaSource = media.source
@@ -455,6 +469,7 @@ class ApiClient {
         }
       }
     } else {
+      // Use axios for all requests for consistency
       let config: any;
       if (includesMedia(payload)) {
         config = await buildFormDataConfig(
@@ -462,12 +477,41 @@ class ApiClient {
           options.attachmentAgent
         )
       } else {
-        config = await buildJSONConfig(payload)
+        config = buildJSONConfig(payload)
       }
-      config.agent = options.agent
-      config.signal = signal
-      config.timeout = 1_500_000 // ms
-      res = await fetch(apiUrl, config).catch(redactToken)
+
+      const axiosConfig: any = {
+        method: 'POST',
+        url: apiUrl.toString(),
+        data: config.body,
+        headers: config.headers,
+        timeout: 1_500_000, // ms
+        httpsAgent: options.agent,
+        httpAgent: options.agent,
+        signal: signal
+      }
+
+      try {
+        res = await axios(axiosConfig)
+        // Convert axios response to fetch-like response for compatibility
+        res = {
+          status: res.status,
+          statusText: res.statusText,
+          json: () => Promise.resolve(res.data)
+        }
+      } catch (error: any) {
+        if (error.response) {
+          // Convert axios error to fetch-like response
+          res = {
+            status: error.response.status,
+            statusText: error.response.statusText,
+            json: () => Promise.resolve(error.response.data)
+          }
+        } else {
+          // Network or other error, apply token redaction and rethrow
+          redactToken(error)
+        }
+      }
     }
     if (res.status >= 500) {
       const errorPayload = {
