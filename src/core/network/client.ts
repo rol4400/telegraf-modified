@@ -461,7 +461,7 @@ class ApiClient {
           res = {
             status: error.response.status,
             statusText: error.response.statusText,
-            json: () => Promise.resolve(error.response.data)
+            json: () => Promise.resolve(error.response.data || {})
           }
         } else {
           // Network or other error, apply token redaction and rethrow
@@ -505,7 +505,7 @@ class ApiClient {
           res = {
             status: error.response.status,
             statusText: error.response.statusText,
-            json: () => Promise.resolve(error.response.data)
+            json: () => Promise.resolve(error.response.data || {})
           }
         } else {
           // Network or other error, apply token redaction and rethrow
@@ -521,9 +521,9 @@ class ApiClient {
       throw new TelegramError(errorPayload, { method, payload })
     }
     const data = await res.json()
-    if (!data.ok) {
+    if (!data || !data.ok) {
       debug('API call failed', data)
-      throw new TelegramError(data, { method, payload })
+      throw new TelegramError(data || { error_code: 500, description: 'Empty response' }, { method, payload })
     }
     return data.result
   }
